@@ -8,6 +8,7 @@ from ..utils.partials import optim, sched
 
 class HyperModule:
     def __init__(self, model, criterion, optimizer, scheduler=None, hyperparams=None):
+        self._optimizer, self._scheduler, self._hyperparams = None, None, None
         self.model, self.criterion = model, criterion
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -19,42 +20,41 @@ class HyperModule:
 
     @property
     def optimizer(self):
-        return self.optimizer
+        return self._optimizer
 
     @optimizer.setter
     def optimizer(self, optimizer):
         if isinstance(optimizer, torch.optim.Optimizer):
-            self.optimizer = optimizer
+            self._optimizer = optimizer
         else:
             optim_gen = optim(optimizer)
-            self.optimizer = optim_gen(params=self.model.parameters())
-        if self.scheduler is not None:
-            sched_gen = sched(self.scheduler)
-            self.scheduler = sched_gen(optimizer=self.optimizer)
+            self._optimizer = optim_gen(params=self.model.parameters())
+        if self._scheduler is not None:
+            self.scheduler = sched(self._scheduler)
 
     @property
     def scheduler(self):
-        return self.scheduler
+        return self._scheduler
 
     @scheduler.setter
     def scheduler(self, scheduler):
         if isinstance(scheduler, torch.optim.lr_scheduler.LRScheduler):
-            self.scheduler = scheduler
-        else:
+            self._scheduler = scheduler
+        elif scheduler is not None:
             sched_gen = sched(scheduler)
-            self.scheduler = sched_gen(optimizer=self.optimizer)
+            self._scheduler = sched_gen(optimizer=self._optimizer)
 
     @property
     def hyperparams(self):
-        return self.hyperparams
+        return self._hyperparams
 
     @hyperparams.setter
     def hyperparams(self, hyperparams):
         if hyperparams:
-            self.hyperparams = hyperparams
-            self.optimizer = optim(self.optimizer, hyperparams)
-            if self.scheduler is not None:
-                self.scheduler = sched(self.scheduler, hyperparams)
+            self._hyperparams = hyperparams
+            self.optimizer = optim(self._optimizer, **hyperparams)
+            if self._scheduler is not None:
+                self.scheduler = sched(self._scheduler, **hyperparams)
 
     # ----------------------- train() --------------------------------------- #
 
@@ -115,26 +115,29 @@ class HyperModule:
     def _update(self, images, targets):
         preds = self.model(images)
         loss = self.criterion(preds, targets)
-        self.optimizer.zero_grad()
+        self._optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()
+        self._optimizer.step()
         self.batch["train_loss"].append(loss.detach().item())
 
     def _update_progress(self, progress, num_epochs):
         loss = self.batch["train_loss"][-1]
         epoch = self.epoch_trained
         progress.set_description(f"Epoch [{epoch}/{num_epochs}]")
-        if self.scheduler is None or getattr(self.scheduler, "_last_lr", None) is None:
+        if (
+            self._scheduler is None
+            or getattr(self._scheduler, "_last_lr", None) is None
+        ):
             progress.set_postfix({"loss": loss})
         else:
-            progress.set_postfix({"loss": loss, "lr": self.scheduler._last_lr})
+            progress.set_postfix({"loss": loss, "lr": self._scheduler._last_lr})
 
     def _update_scheduler(self):
-        if self.scheduler is not None:
-            if "metrics" in self.scheduler.step.__code__.co_varnames:
-                self.scheduler.step(self.batch["avg_valid_loss"])
+        if self._scheduler is not None:
+            if "metrics" in self._scheduler.step.__code__.co_varnames:
+                self._scheduler.step(self.batch["avg_valid_loss"])
             else:
-                self.scheduler.step()
+                self._scheduler.step()
 
     def _update_history(self):
         self.train_loss.append(self.batch["avg_train_loss"])
@@ -265,11 +268,11 @@ class HyperModule:
         self.model.load_state_dict(state_dict["model"])
         self.model.to(device)
 
-        self.optimizer.load_state_dict(state_dict["optimizer"])
-        if self.scheduler is not None:
-            self.scheduler.load_state_dict(state_dict["scheduler"])
+        self._optimizer.load_state_dict(state_dict["optimizer"])
+        if self._scheduler is not None:
+            self._scheduler.load_state_dict(state_dict["scheduler"])
         else:
-            self.scheduler = None
+            self._scheduler = None
         self.test_acc = state_dict["test_acc"]
 
         n_train_loss = len(state_dict["train_loss"])
@@ -288,9 +291,9 @@ class HyperModule:
     def save(self, path, verbose=True):
         state_dict = {}
         state_dict["model"] = self.model.state_dict()
-        state_dict["optimizer"] = self.optimizer.state_dict()
-        if self.scheduler is not None:
-            state_dict["scheduler"] = self.scheduler.state_dict()
+        state_dict["optimizer"] = self._optimizer.state_dict()
+        if self._scheduler is not None:
+            state_dict["scheduler"] = self._scheduler.state_dict()
         else:
             state_dict["scheduler"] = None
         state_dict["epoch_trained"] = self.epoch_trained

@@ -3,7 +3,17 @@ from functools import partial
 import torch.optim
 import torch.optim.lr_scheduler
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 from typing import Type
+
+
+def fix_default(gen: Type[Optimizer] | Type[LRScheduler], params: dict):
+    """not all optimizer and lr_scheduler are fixed"""
+    if gen == torch.optim.SGD:
+        params["lr"] = 0.01
+    if gen == torch.optim.lr_scheduler.ExponentialLR:
+        params["gamma"] = 0.9
+    return params
 
 
 def optim(optimizer: Type[Optimizer] | Optimizer | str | partial, **hyperparam):
@@ -43,7 +53,14 @@ def optim(optimizer: Type[Optimizer] | Optimizer | str | partial, **hyperparam):
             optim_gen = (
                 optimizer if is_optimizer_class else getattr(torch.optim, optimizer)
             )
-            opt_params = {}
+            signature = inspect.signature(optim_gen.__init__)
+            func_param_name = set(signature.parameters.keys())
+            opt_params = {
+                key: value.default
+                for key, value in signature.parameters.items()
+                if value.default is not inspect.Parameter.empty
+            }
+            opt_params = fix_default(optim_gen, opt_params)
 
         func_param_name = set(optim_gen.__init__.__code__.co_varnames)
         hyperparam_name = set(hyperparam.keys())
@@ -66,7 +83,7 @@ def optim(optimizer: Type[Optimizer] | Optimizer | str | partial, **hyperparam):
         )
 
 
-def sched(scheduler, **hyperparam):
+def sched(scheduler: Type[LRScheduler] | LRScheduler | str | partial, **hyperparam):
     is_scheduler_class = inspect.isclass(scheduler) and issubclass(
         scheduler, torch.optim.lr_scheduler.LRScheduler
     )
@@ -83,14 +100,21 @@ def sched(scheduler, **hyperparam):
                 for key in func_param_name
                 if key not in ["self", "optimizer"]
             }
+            sch_params["last_epoch"] = -1
         else:
             sched_gen = (
                 scheduler
                 if is_scheduler_class
                 else getattr(torch.optim.lr_scheduler, scheduler)
             )
-            func_param_name = set(sched_gen.__init__.__code__.co_varnames)
-            sch_params = {}
+            signature = inspect.signature(sched_gen.__init__)
+            func_param_name = set(signature.parameters.keys())
+            sch_params = {
+                key: value.default
+                for key, value in signature.parameters.items()
+                if value.default is not inspect.Parameter.empty
+            }
+            sch_params = fix_default(sched_gen, sch_params)
 
         hyperparam_name = set(hyperparam.keys())
         sch_params.update(
