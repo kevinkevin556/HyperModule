@@ -3,6 +3,7 @@ import numpy as np
 from torch.nn.functional import softmax
 from tqdm import tqdm
 from functools import partial
+import warnings
 from ..utils.partials import optim, sched
 
 
@@ -66,6 +67,7 @@ class HyperModule:
         save_path=None,
         num_epochs=1,
         verbose=True,
+        **kwargs,
     ):
         device = torch.device("cuda")
         self.model.to(device)
@@ -100,13 +102,19 @@ class HyperModule:
             # Validatiing stage
             self._perform_validation(valid_dataloader, valid_loss, verbose)
             self._update_history()
-            self.save(save_path, verbose=False)
+            try:
+                self.save(save_path, verbose=False)
+            except RuntimeError as e:
+                warnings.warn(str(e), category=RuntimeWarning)
             self._update_scheduler()
 
             # Save the best model (if any)
             if self.batch["avg_valid_loss"] < min_loss:
-                min_loss = self.batch["avg_valid_loss"]
-                self.save(save_path + ".best", verbose)
+                try:
+                    self.save(save_path + ".best", verbose)
+                    min_loss = self.batch["avg_valid_loss"]
+                except RuntimeError as e:
+                    warnings.warn(str(e), category=RuntimeWarning)
 
         # Clear training infomation
         self.batch["train_loss"], self.batch["valid_acc"] = [], []
