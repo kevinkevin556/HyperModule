@@ -86,22 +86,24 @@ Note this is equivalent to Example 1 and 2.
 
 ## Class structure
 
-* `__init__()`: Assign neural network, optimizer, loss function and scheduler to a hypermodule instance
-* `train()`
-  * `update_()`: Conduct forward path and backward proporgation
-  * `update_progress_()`: Update epoch information for `tqdm`
-  * `update_scheduler_()`: Update scheduler
-  * `update_history_()`: log training loss and validation accuracy.
-  * `perform_validation_()`: perform validation by calling `valudate()` if `valid_dataloader` is not None.
-* `validate()`
-* `test()`: Test the performance of neural network
-  * `get_prediction_()`: get predicted labels and ground truth of each batch
-  * `visualize_class_acc_`: plot confusion heatmap and print testing accuracy of each class
-    * `generate_confusion_df_()`: generate pandas `DataFrame` of confusion matrix
-    * `plot_confusion_heatmap_()`: plot confusion heatmap
-    * `print_class_acc_`: print accuracy of each class
-* `load()`: read *information* of neural network from the given path.
-* `save()`: save *information* to the given path.
+- `__init__`: The constructor of the class which takes the model, criterion, optimizer, scheduler, and hyperparameters as input arguments.
+- `optimizer`: A property that returns the optimizer used for training the model.
+    - `optimizer.setter`: A method that sets the optimizer used for training the model, either by accepting an instance of `torch.optim.Optimizer` or by creating an optimizer based on the provided optimizer configuration.
+- `scheduler`: A property that returns the scheduler used for adjusting the learning rate of the optimizer during training.
+    - `scheduler.setter`: A method that sets the scheduler used for adjusting the learning rate of the optimizer during training, either by accepting an instance of `torch.optim.lr_scheduler.LRScheduler` or by creating a scheduler based on the provided scheduler configuration.
+- `hyperparams`: A property that returns the hyperparameters used for optimizing the model.
+    - `hyperparams.setter`: A method that sets the hyperparameters used for optimizing the model, either by accepting a dictionary of hyperparameters or by creating a new optimizer and scheduler based on the provided hyperparameters.
+- `train`: A method that trains the model using the provided training and validation data loaders for the specified number of epochs. It also saves the best model based on the lowest validation loss and returns the training and validation losses and accuracy.
+    - `_update`: A method that updates the model parameters based on the provided input images and targets and the current loss.
+    - `_update_progress`: A method that updates the training progress bar based on the current epoch and batch loss.
+    - `_update_scheduler`: A method that updates the learning rate of the optimizer using the scheduler.
+    - `_update_history`: A method that updates the training history with the current epoch's training and validation losses and accuracy.
+    - `_perform_validation`: A method that validates the model using the provided validation data loader and loss function and returns the validation loss and accuracy.
+- `validate`: Evaluates the model on the given dataloader using the given criterion and returns the loss and accuracy.
+- `test`: Evaluates the model on the given test dataloader using the given criterion and returns the accuracy.
+- `predict`: Returns the model's predictions for the given dataloader, optionally applying softmax to the output.
+- `save`: Saves the model and training information to the given save path, or to the HyperModule's load_path attribute if none is given.
+
 
 ## Loading and Saving
 
