@@ -1,10 +1,41 @@
-import torch
-import numpy as np
-from torch.nn.functional import softmax
-from tqdm import tqdm
-from functools import partial
 import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.nn.functional import softmax
+from torch.utils.data import Subset
+from torchvision.transforms.functional import to_pil_image
+from tqdm import tqdm
+
 from ..utils.partials import optim, sched
+
+
+def plot_images(image_seq, xlabs, cmap, figsize=6):
+    n = len(image_seq)
+    figsize = (figsize, figsize * n // 2)
+    fig, ax = plt.subplots(n, len(xlabs), gridspec_kw={"wspace": 0, "hspace": 0}, figsize=figsize)
+    for row, images in enumerate(image_seq):
+        for col, (img, xlab) in enumerate(zip(images, xlabs)):
+            if xlab == "Image":
+                ax[row][col].imshow(to_pil_image(img), cmap="gray")
+            else:
+                ax[row][col].imshow(to_pil_image(img), cmap=cmap)
+            ax[row][col].set_xlabel(xlab)
+            ax[row][col].tick_params(
+                bottom=False,
+                left=False,
+                labelbottom=False,
+                labelleft=False,
+            )
+    plt.show()
+
+
+def get_dataset(dataloader):
+    dataset = dataloader.dataset
+    if isinstance(dataset, Subset):
+        dataset = dataset.dataset
+    return dataset
 
 
 class HyperModule:
@@ -57,7 +88,9 @@ class HyperModule:
             if self._scheduler is not None:
                 self.scheduler = sched(self._scheduler, **hyperparams)
 
+    ############################################################################
     # ----------------------- train() --------------------------------------- #
+    ############################################################################
 
     def train(
         self,
@@ -96,7 +129,7 @@ class HyperModule:
             train_progress = tqdm(train_dataloader, position=0, leave=verbose)
             for images, targets in train_progress:
                 images, targets = images.to(device), targets.to(device)
-                self._update(images, targets)
+                self._update(images, targets, epoch=epoch, num_epochs=num_epochs, **kwargs)
                 self._update_progress(train_progress, start_epoch + num_epochs)
 
             # Validatiing stage
@@ -119,12 +152,15 @@ class HyperModule:
         # Clear training infomation
         self.batch["train_loss"], self.batch["valid_acc"] = [], []
         self.test_acc = None
+        self.model.eval()
 
-    def _update(self, images, targets):
+    def _update(self, images, targets, **kwargs):
         preds = self.model(images)
         loss = self.criterion(preds, targets)
         self._optimizer.zero_grad()
         loss.backward()
+        if kwargs.get("max_norm", False):
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=kwargs.get("max_norm"))
         self._optimizer.step()
         self.batch["train_loss"].append(loss.detach().item())
 
@@ -132,10 +168,7 @@ class HyperModule:
         loss = self.batch["train_loss"][-1]
         epoch = self.epoch_trained
         progress.set_description(f"Epoch [{epoch}/{num_epochs}]")
-        if (
-            self._scheduler is None
-            or getattr(self._scheduler, "_last_lr", None) is None
-        ):
+        if self._scheduler is None or getattr(self._scheduler, "_last_lr", None) is None:
             progress.set_postfix({"loss": loss})
         else:
             progress.set_postfix({"loss": loss, "lr": self._scheduler._last_lr})
@@ -174,7 +207,9 @@ class HyperModule:
                 f'Valid Acc: {self.batch["avg_valid_acc"]:.3f}',
             )
 
+    ############################################################################
     # ------------------------ predict() ------------------------------------- #
+    ############################################################################
 
     def predict(self, images=None, dataloader=None, numpy=False):
         device = torch.device("cuda")
@@ -186,15 +221,27 @@ class HyperModule:
         if dataloader is not None:
             return self._predict_dataloader(dataloader, numpy=numpy)
 
-    def _torch2numpy(self, tensor):
-        return tensor.detach().cpu().numpy()
+    def plot_prediction(self, dataloader, cmap=None, figsize=6):
+        device = torch.device("cuda")
+        dataset = get_dataset(dataloader)
+        cmap = cmap if cmap is not None else getattr(dataset, "cmap", None)
+        image_seq = []
+
+        assert cmap is not None, "cmap should be specified."
+
+        for image, _ in dataloader:
+            image = image.to(device)
+            pred = self.predict(image)
+            image_seq.append([image.squeeze(), pred.byte()])
+
+        plot_images(image_seq, ["Image", "Prediction"], cmap, figsize)
 
     def _predict_image(self, images, numpy=False):
         logits = self.model(images)
         probs = softmax(logits, dim=1)
         pred_labels = torch.argmax(probs, dim=1)
         if numpy:
-            return self._torch2numpy(pred_labels)
+            return pred_labels.detach().cpu().numpy()
         else:
             return pred_labels
 
@@ -203,19 +250,19 @@ class HyperModule:
         self.model.to(device)
         self.model.eval()
         with torch.no_grad():
-            pred_list = []
-            target_list = []
+            pred_list, target_list = [], []
             for images, targets in dataloader:
                 images, targets = images.to(device), targets.to(device)
                 pred_labels = self._predict_image(images, numpy=numpy)
                 pred_list.append(pred_labels)
-                targets = self._torch2numpy(targets) if numpy else targets
+                targets = targets.detach().cpu().numpy() if numpy else targets
                 target_list.append(targets)
-
         output = (pred_list, target_list) if return_target else pred_list
         return output
 
+    ############################################################################
     # ----------------------- validate() ------------------------------------- #
+    ############################################################################
 
     def validate(self, dataloader, loss=None):
         device = torch.device("cuda")
@@ -231,22 +278,21 @@ class HyperModule:
                 probs = softmax(logits, dim=1)
                 pred_labels = torch.argmax(probs, dim=1)
                 valid_loss.append(loss(logits, targets).item())
-                valid_acc.append(
-                    (pred_labels == targets).type(torch.float32).mean().item()
-                )
+                valid_acc.append((pred_labels == targets).type(torch.float32).mean().item())
         return valid_loss, valid_acc
 
+    ############################################################################
     # ------------------------ test() ---------------------------------------- #
+    ############################################################################
 
     def test(self, dataloader, load_path="last", metrics=None, verbose=True, **kwargs):
+        def default_metrics(targets, pred_labels):
+            total_acc = np.mean(targets == pred_labels)
+            return {"total_acc": total_acc}
+
         device = torch.device("cuda")
         self.model.to(device)
-        if load_path == "last":
-            self.load(self.load_path, verbose)
-        elif load_path == "best":
-            self.load(self.load_path + ".best", verbose)
-        else:
-            self.load(load_path, verbose)
+        self.load(load_path, verbose)
         self.model.eval()
 
         # Obtain predictions and ground truths
@@ -255,26 +301,43 @@ class HyperModule:
         )
         pred_labels = np.concatenate(pred_list)
         targets = np.concatenate(target_list)
-
-        def default_metrics(targets, pred_labels):
-            total_acc = np.mean(targets == pred_labels)
-            return {"total_acc": total_acc}
-
         if metrics is None:
             self.test_acc = default_metrics(targets, pred_labels)
         else:
             self.test_acc = metrics(targets, pred_labels, **kwargs)
-
         return self.test_acc
 
+    def plot_test(self, dataloader, cmap=None, figsize=6):
+        device = torch.device("cuda")
+        cmap = (
+            cmap
+            if cmap is not None
+            else dataloader.dataset.dataset.cmap
+            if isinstance(dataloader.dataset, Subset)
+            else dataloader.dataset.cmap
+        )
+        image_seq = []
+        for image, label in dataloader:
+            image, label = image.to(device), label.to(device)
+            pred = self.predict(image)
+            image_seq.append([image.squeeze(), pred.byte(), label.byte()])
+        plot_images(image_seq, ["Image", "Prediction", "Ground Truth"], cmap, figsize)
+
+    ############################################################################
     # ----------------------- load() ----------------------------------------- #
+    ############################################################################
 
     def load(self, path, verbose=True):
         device = torch.device("cuda")
+        if path == "last":
+            path = self.load_path
+        if path == "best":
+            path = self.load_path + ".best"
         state_dict = torch.load(path)
 
         self.model.load_state_dict(state_dict["model"])
         self.model.to(device)
+        self.model.eval()
 
         self._optimizer.load_state_dict(state_dict["optimizer"])
         if self._scheduler is not None:
@@ -294,7 +357,9 @@ class HyperModule:
         if verbose:
             print("State dict sucessfully loaded.")
 
+    ############################################################################
     # ----------------------- save() ----------------------------------------- #
+    ############################################################################
 
     def save(self, path, verbose=True):
         state_dict = {}
