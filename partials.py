@@ -1,10 +1,19 @@
 import inspect
+from inspect import Parameter
 from functools import partial
 import torch.optim
 import torch.optim.lr_scheduler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from typing import Type
+
+try:
+    import torch_optimizer
+
+    # Support torch_optimizer
+    torch_optimizer_installed = True
+except ImportError:
+    pass
 
 
 def fix_default(gen: Type[Optimizer] | Type[LRScheduler], params: dict):
@@ -20,67 +29,69 @@ def optim(optimizer: Type[Optimizer] | Optimizer | str | partial, **hyperparam):
     """A partial function designed to generate optimizer using given hyperparameters.
 
     Args:
-        optimizer (Type[Optimizer] | Optimizer | str | partial): what optimizer will be generated.
+        optimizer (Type[Optimizer] | Optimizer | str | partial): optimizer to be generated.
 
         * Type[Optimizer]: return a function that creates an optimizer of the given type using the hyperparameters.
 
         * Optimizer: return a function that generates a copy of the given optimizer. All defaults will be preserved,
-        unlesss they are modified in the hyperparameter dict.
+        unless they are modified in the hyperparameter dict.
 
-        * str: search the corresponding optimizer in torch.optim.
+        * str: search the corresponding optimizer in torch.optim (and torch_optimizer if this library is installed).
 
         * partial: simply return the input partial function with its keywords updated by hyperparameters.
 
     Raises:
-        TypeError: If `optimizer` is not a string, instance or class related to optimizer or a partial.
+        TypeError: If `optimizer` is not a string, optimizer instance, optimizer class or a partial.
 
     Returns:
         partial: A partial function to generate optimizer
     """
 
-    is_optimizer_class = inspect.isclass(optimizer) and issubclass(
-        optimizer, torch.optim.Optimizer
-    )
-    is_optimizer_instance = isinstance(optimizer, torch.optim.Optimizer)
-    is_optimizer_str = isinstance(optimizer, str)
-    is_optimizer = is_optimizer_class or is_optimizer_instance or is_optimizer_str
-
-    if is_optimizer:
-        if is_optimizer_instance:
-            optim_gen = optimizer.__class__
-            opt_params = optimizer.defaults
+    if isinstance(optimizer, partial):
+        optim_partial = optimizer
+        init_param_name = set(optimizer.keywords.keys())
+        hyperparam_name = set(hyperparam.keys())
+        opt_params = {var: hyperparam[var] for var in init_param_name & hyperparam_name}
+        optim_partial.keywords.update(opt_params)
+    else:
+        # Obtain optimizer class
+        if inspect.isclass(optimizer) and issubclass(optimizer, Optimizer):
+            optim_class = optimizer
+        elif isinstance(optimizer, Optimizer):
+            optim_class = optimizer.__class__
+        elif isinstance(optimizer, str):
+            if torch_optimizer_installed:
+                optim_class = getattr(torch_optimizer, optimizer, None)
+            if optim_class is None:
+                optim_class = getattr(torch.optim, optimizer)
         else:
-            optim_gen = (
-                optimizer if is_optimizer_class else getattr(torch.optim, optimizer)
+            raise TypeError(
+                f"Invalid type for argument 'optimizer' in partial function 'optim', get type {type(optimizer)}"
             )
-            signature = inspect.signature(optim_gen.__init__)
-            func_param_name = set(signature.parameters.keys())
-            opt_params = {
-                key: value.default
-                for key, value in signature.parameters.items()
-                if value.default is not inspect.Parameter.empty
-            }
-            opt_params = fix_default(optim_gen, opt_params)
 
-        func_param_name = set(optim_gen.__init__.__code__.co_varnames)
+        # Get optimizer parameters from its signature
+        signature = inspect.signature(optim_class.__init__)
+        optim_init_param = signature.parameters
+        if isinstance(optimizer, Optimizer):
+            p_keys = optim_init_param.keys()
+            opt_params = {
+                k: optimizer.defaults[k] for k in p_keys if k not in ("self", "params")
+            }
+        else:
+            p_items = optim_init_param.items()
+            opt_params = {
+                k: v.default for k, v in p_items if v.default is not Parameter.empty
+            }
+        opt_params = fix_default(optim_class, opt_params)
+
+        # Update optimizer parameters if hyperparams are provided
+        init_param_name = set(optim_init_param.keys())
         hyperparam_name = set(hyperparam.keys())
         opt_params.update(
-            {var: hyperparam[var] for var in func_param_name & hyperparam_name}
+            {var: hyperparam[var] for var in init_param_name & hyperparam_name}
         )
-        output = partial(optim_gen, **opt_params)
-        return output
-
-    if isinstance(optimizer, partial):
-        func_param_name = set(optimizer.keywords.keys())
-        hyperparam_name = set(hyperparam.keys())
-        opt_params = {var: hyperparam[var] for var in func_param_name & hyperparam_name}
-        optimizer.keywords.update(opt_params)
-        return optimizer
-
-    else:
-        raise TypeError(
-            f"Invalid type for argument 'optimizer' in partial function 'optim', get type {type(optimizer)}"
-        )
+        optim_partial = partial(optim_class, **opt_params)
+    return optim_partial
 
 
 def sched(scheduler: Type[LRScheduler] | LRScheduler | str | partial, **hyperparam):
