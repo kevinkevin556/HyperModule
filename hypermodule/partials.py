@@ -5,7 +5,7 @@ import torch.optim
 import torch.optim.lr_scheduler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
-from typing import Type
+from typing import Type, Union
 
 try:
     import torch_optimizer
@@ -14,7 +14,7 @@ except ImportError:
     pass
 
 
-def fix_default(gen: Type[Optimizer] | Type[LRScheduler], params: dict):
+def fix_default(gen: Union[Type[Optimizer], LRScheduler], params: dict):
     """not all optimizer and lr_scheduler are fixed"""
     if gen == torch.optim.SGD:
         params["lr"] = 0.01
@@ -23,7 +23,7 @@ def fix_default(gen: Type[Optimizer] | Type[LRScheduler], params: dict):
     return params
 
 
-def optim(optimizer: Type[Optimizer] | Optimizer | str | partial, **hyperparam):
+def optim(optimizer: Union[Type[Optimizer], Optimizer, str, partial], **hyperparam):
     """A partial function designed to generate optimizer using given hyperparameters.
 
     Args:
@@ -92,7 +92,7 @@ def optim(optimizer: Type[Optimizer] | Optimizer | str | partial, **hyperparam):
     return optim_partial
 
 
-def sched(scheduler: Type[LRScheduler] | LRScheduler | str | partial, **hyperparam):
+def sched(scheduler: Union[Type[LRScheduler], LRScheduler, str, partial], **hyperparam):
     is_scheduler_class = inspect.isclass(scheduler) and issubclass(
         scheduler, torch.optim.lr_scheduler.LRScheduler
     )

@@ -1,18 +1,18 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='HyperModule',
+    name='hypermodule',
     version='0.1.0',
     description='Wrapper for managing neural network training processes',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/kevinkevin556/HyperModule',
     author='Zhen-Lun Hong',
-    author_email='your.email@example.com',
+    author_email='kevink556@gmail.com',
     license='MIT',
-    packages=find_packages(),
+    packages=find_packages('hypermodule'),
     install_requires=[
-        'torch',
+        'torch >= 2.0.1',
         'matplotlib',
         'numpy',
         'tqdm',
