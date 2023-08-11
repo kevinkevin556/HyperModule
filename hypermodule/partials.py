@@ -9,9 +9,9 @@ from typing import Type, Union
 
 try:
     import torch_optimizer
-    torch_optimizer_installed = True # Support torch_optimizer
+    torch_optimizer_installed = True
 except ImportError:
-    pass
+    torch_optimizer_installed = False 
 
 
 def fix_default(gen: Union[Type[Optimizer], LRScheduler], params: dict):
