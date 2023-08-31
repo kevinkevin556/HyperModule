@@ -60,7 +60,7 @@ def optim(optimizer: Union[Type[Optimizer], Optimizer, str, partial], **hyperpar
         elif isinstance(optimizer, str):
             if torch_optimizer_installed:
                 optim_class = getattr(torch_optimizer, optimizer, None)
-            if optim_class is None:
+            if (not torch_optimizer_installed) or (optim_class is None):
                 optim_class = getattr(torch.optim, optimizer)
         else:
             raise TypeError(

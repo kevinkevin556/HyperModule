@@ -21,5 +21,8 @@ def plot_images(image_seq, xlabs, cmap, figsize=6):
 def get_dataset(dataloader):
     dataset = dataloader.dataset
     if isinstance(dataset, Subset):
+        index = dataset.indices
         dataset = dataset.dataset
-    return dataset
+    else:
+        index = list(range(len(dataset)))
+    return dataset, index
