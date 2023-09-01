@@ -1,0 +1,24 @@
+{
+    "model": "ResNet50V2",
+    "checkpoint_dir": "./model/ResNet50/",
+    "training_log":[
+        {"n_epochs": 2,
+         "losses":{
+            "BCEloss":[0.02, 0.05],
+            "Diceloss":[0.32, 0.10]
+         },
+         "metrics":{
+            "CEloss":[0.01, 0.02],
+            "Accuracy":[0.991, 0.934],
+            "DiceScore":[0.92, 0.93]
+         },
+         "optimizer": "SGD",
+         "scheduler": "poly",
+         "lr":[0.05, 0.02],
+         "last_model":"checkpoint.ckpt",
+         "last_optimizer_state": "optimizer_state.st",
+         "last_scheduler_state": "scheduler_state.st",
+         "best_model": "best_checkpoint.ckpt"
+        }
+    ] 
+}
