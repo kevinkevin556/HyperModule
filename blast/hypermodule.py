@@ -1,3 +1,5 @@
+import json
+import os
 import warnings
 
 import matplotlib.pyplot as plt
@@ -6,12 +8,10 @@ import torch
 from torch.nn.functional import softmax
 from torch.utils.data import Subset
 from tqdm import tqdm
-import os
-import json
 
-from .partials import optim, sched
-from .utils import plot_images, get_dataset
 from .components import Trainer
+from .partials import optim, scheds
+
 
 class HyperModule:
     def __init__(self, model, criterion, optimizer, scheduler=None, hyperparams=None):
@@ -20,12 +20,12 @@ class HyperModule:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.hyperparams = hyperparams
-        
-        self.history = History()
+
+        # self.history = History()
         # self.train_loss, self.valid_loss, self.valid_acc = [], [], []
         # self.epoch_trained = 0
         # self.test_acc = None
-        self.load_path = None
+        # self.load_path = None
 
     @property
     def optimizer(self):
@@ -65,14 +65,15 @@ class HyperModule:
             if self._scheduler is not None:
                 self.scheduler = sched(self._scheduler, **hyperparams)
 
-
     def train(self, train_dataloader, valid_dataloader, num_epochs, verbose):
         Trainer(self).fit(train_dataloader, valid_dataloader, num_epochs, verbose)
 
     def test(self, test_dataloader):
         raise NotImplementedError
 
-    def save(self, checkpoint_dir, model=None, optimizer=None, scheduler=None, history=None, verbose=True):
+    def save(
+        self, checkpoint_dir, model=None, optimizer=None, scheduler=None, history=None, verbose=True
+    ):
         if model:
             model_path = os.path.join(checkpoint_dir, model)
             torch.save(self.model.state_dict(), model_path)
@@ -118,5 +119,3 @@ class HyperModule:
         self.valid_acc = state_dict["valid_acc"][:n]
         if verbose:
             print("State dict sucessfully loaded.")
-
-

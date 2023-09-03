@@ -1,20 +1,27 @@
-import torch
-import tqdm
+from pathlib import Path
+
 import numpy as np
+import torch
 from torch.nn.functional import softmax
+from tqdm.auto import tqdm
 
-
-class BaseModule:
-    pass
+from .base_module import BaseModule
+from .conditions import if_valid_loss_improved
+from .history import EpochHistory, History
 
 
 class Predictor(BaseModule):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    """Predictor class provides methods for prediction and pre-/post-processing.
+
+    TODO: Add Preprocessing method
+    TODO: Add Postporcessing method
+    """
+
+    def __init__(self, model, optimizer=None, scheduler=None, hyperparams=None):
+        super().__init__(model, optimizer, scheduler, hyperparams)
 
     def predict(self, images=None, dataloader=None):
-        self.model.to("cuda")
-        self.model.eval()
+        self.model.to("cuda").eval()
         if images:
             images = images.to("cuda")
             return self.predict_image(images)
@@ -22,173 +29,170 @@ class Predictor(BaseModule):
             return self.predict_dataloader(dataloader)
 
     def predict_image(self, images):
-        self.model.to("cuda")
-        self.model.eval()
+        self.model.to("cuda").eval()
         images = images.to("cuda")
         logits = self.model(images)
         probs = softmax(logits, dim=1)
         pred_labels = torch.argmax(probs, dim=1)
         return pred_labels
-    
-    def predict_dataloader(self, dataloader, return_target=False):
-        self.model.to("cuda")
-        self.model.eval()
-        with torch.no_grad():
-            pred_list, target_list = [], []
+
+    def predict_dataloader(self, dataloader, target=False, logit=False):
+        self.model.to("cuda").eval()
+        pred_list, target_list = [], []
+        with torch.no_grad():  # Turn off gradient computation to save memory
             for images, targets in dataloader:
                 images, targets = images.to("cuda"), targets.to("cuda")
-                pred_labels = self.predict_image(images)
-                pred_list.append(pred_labels)
-                target_list.append(targets)
-        output = (pred_list, target_list) if return_target else pred_list
+                predictions = self.model(images) if logit else self.predict_image(images)
+                pred_list.append(predictions)
+                if target:
+                    target_list.append(targets)
+        output = (torch.cat(pred_list), torch.cat(target_list)) if target else torch.cat(pred_list)
         return output
 
 
-
 class Evaluator(Predictor):
-    def __init__(self, hypermodule, metrics):
-        self.model = hypermodule.model
-        self.predict = hypermodule.predict
-        loss = self.model.criterion
-        self.metrics = {
-            "accuracy": lambda pred, target: np.mean(pred==target),
-            loss.__class__.anme: loss   
-        }
-        self.metrics.update(metrics)
-    
-    
-    def validate(self, dataloader, loss=None):
-        device = torch.device("cuda")
-        self.model.to(device)
-        self.model.eval()
-        valid_acc, valid_loss = [], []
-        if loss is None:
-            loss = self.criterion
-        with torch.no_grad():
-            for images, targets in dataloader:
-                images, targets = images.to(device), targets.to(device)
-                logits = self.model(images)
-                probs = softmax(logits, dim=1)
-                pred_labels = torch.argmax(probs, dim=1)
-                valid_loss.append(loss(logits, targets).item())
-                valid_acc.append((pred_labels == targets).type(torch.float32).mean().item())
-        return valid_loss, valid_acc
+    def __init__(
+        self,
+        *args,
+        metrics={"Accuracy": lambda logits, y: (logits.argmax(1) == y).float().mean()},
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.metrics = metrics
 
-
-    def test(self, test_dataloader, verbose=True,):
-        raise NotImplementedError
-    
-
-
-    
-    def test(self, dataloader, load_path="last", metrics=None, verbose=True, **kwargs):
-        def default_metrics(targets, pred_labels):
-            total_acc = np.mean(targets == pred_labels)
-            return {"total_acc": total_acc}
-
-        device = torch.device("cuda")
-        self.model.to(device)
-        self.load(load_path, verbose)
-        self.model.eval()
-
-        # Obtain predictions and ground truths
-        pred_list, target_list = self._predict_dataloader(
-            dataloader, return_target=True, numpy=True
-        )
-        pred_labels = np.concatenate(pred_list)
-        targets = np.concatenate(target_list)
-        if metrics is None:
-            self.test_acc = default_metrics(targets, pred_labels)
-        else:
-            self.test_acc = metrics(targets, pred_labels, **kwargs)
-        return self.test_acc
-
+    def validate(self, dataloader):
+        self.model.to("cuda").eval()
+        logits, targets = self.predict_dataloader(dataloader, target=True, logit=True)
+        output = {}
+        for metric, metric_func in self.metrics.items():
+            value = metric_func(logits, targets)
+            output[metric] = value.item() if torch.is_tensor(value) else value
+        return output
 
 
 class Trainer(Evaluator):
-    def __init__(self, hypermodule, validator):
-        self.model = hypermodule.model
-        self.criterion = hypermodule.criterion
-        self.optimizer = hypermodule.optimizer
-        self.scheduler = hypermodule.scheduler
-        self.history = hypermodule.history
+    """
+    TODO: ⭐ Earlystopping
+    """
 
-        self.validator = validator
-        self.validate = validator.validate
+    def __init__(self, *args, loss, checkpoint_dir=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loss = loss
+        self.checkpoint_dir = checkpoint_dir
+        self.history = History(self.model, self.checkpoint_dir)
 
-    def fit(self,train_dataloader, valid_dataloader=None, num_epochs=1, verbose=True, **kwargs):
+        # Add training loss to metrics as validation loss
+        self.metrics = {loss.__class__.__name__: loss} | self.metrics
+
+    def fit(self, train_dataloader, valid_dataloader=None, max_epochs=1, verbose=True, **kwargs):
         self.model.to("cuda")
-        self.history.new_training()
+        self.history.new_training(self.loss, self.metrics, self.optimizer, self.scheduler)
+        self.history.update(max_epochs=max_epochs)
 
-        for epoch in range(num_epochs):
-            self.epoch_trained += 1
-            self.epoch_history = EpochHistory(loss=self.criterion, metrics=self.validator.metrics)
+        for epoch in range(max_epochs):
+            self.epoch_history = EpochHistory(loss=self.loss, metrics=self.metrics)
             self.model.train()
             train_progress = tqdm(train_dataloader, position=0, leave=verbose)
             for images, targets in train_progress:
                 images, targets = images.to("cuda"), targets.to("cuda")
                 self.update(images, targets)
-                self.update_progressbar(train_progress, num_epochs)
+                self.update_progressbar(train_progress, max_epochs)
             self.perform_validation(valid_dataloader, verbose)
             self.update_scheduler()
             self.update_history()
-            self.checkpoint("last.pth")
-            self.checkpoint("best.pth", if_valid_loss_improve)
+            # Save last model
+            self.checkpoint(
+                model={"last_model": "last_model.ckpt"},
+                optimizer="optimizer_state.pt",
+                scheduler="scheduler_state.pt",
+                verbose=False,
+            )
+            # Save model when validation loss is improved
+            self.checkpoint(
+                model={"best_model": "best_model.ckpt"}, condition=if_valid_loss_improved
+            )
+
+            # TODO: Make checkpointing more flexible??
+
         self.model.eval()
         del self.epoch_history
 
-
     def update(self, images, targets, **kwargs):
-        # back-propagate
+        ## back-propagate
         preds = self.model(images)
-        loss = self.criterion(preds, targets)
+        loss = self.loss(preds, targets)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        # record loss
-        self.epoch_history.update(loss={loss.__class__.name: loss.detach().item()})
+        ## record loss
+        self.epoch_history.update(loss={self.loss.__class__.__name__: loss.detach().item()})
 
+    def update_progressbar(self, progress, max_epochs):
+        ## Update progress bar description
+        n_epochs = sum([t["n_epochs"] for t in self.history.training])
+        total_epochs = sum([t["n_epochs"] for t in self.history.training[:-1]]) + max_epochs
+        progress.set_description(f"Epoch [{n_epochs+1}/{total_epochs}]")
 
-    def update_progresbar(self, progress, num_epochs):
-        # Update progress bar description
-        n_epoch = self.start_epoch + self.history.training[-1].n_epoch
-        total_epochs = self.start_epoch + num_epochs
-        progress.set_description(f"Epoch [{n_epoch}/{total_epochs}]")
-        
-        # Update progress bar postfix
-        loss = self.epoch_history.loss[-1]
-        lr = getattr(self.scheduler, "_last_lr", None)
-        postfix = {"loss": loss, "lr": lr} if lr else {"loss": loss}
+        ## Update progress bar postfix
+        loss = self.epoch_history.loss[self.loss.__class__.__name__][-1]
+        lr = getattr(self.scheduler, "_last_lr", [self.optimizer.defaults["lr"]])[0]
+        postfix = {"loss": loss, "lr": lr} if self.scheduler else {"loss": loss}
         progress.set_postfix(postfix)
-        
 
     def update_scheduler(self):
         if self.scheduler is None:
             pass
         elif "metrics" in self.scheduler.step.__code__.co_varnames:
-            self.scheduler.step(self.batch["avg_valid_loss"])
+            metrics = np.mean(self.epoch_history.metrics[self.loss.__class__.__name__][-1])
+            self.scheduler.step(metrics=metrics)
         else:
             self.scheduler.step()
 
-
     def update_history(self):
-        avg_train_loss = {key:value.mean() for key, value in self.epoch_history.loss.items()}
-        avg_valid_metrics = {key:value.mean() for key, value in self.epoch_history.metrics.items()}
-        self.history.update(loss=avg_train_loss, metrics=avg_valid_metrics)
-
+        n_epochs = self.history.training[-1]["n_epochs"]
+        avg_train_loss = {key: np.mean(value) for key, value in self.epoch_history.loss.items()}
+        avg_valid_metrics = {
+            key: np.mean(value) for key, value in self.epoch_history.metrics.items()
+        }
+        self.history.update(
+            loss=avg_train_loss,
+            metrics=avg_valid_metrics,
+            n_epochs=n_epochs + 1,
+        )
 
     def perform_validation(self, valid_dataloader=None, verbose=True):
         if valid_dataloader:
-            valid_metrics = self.validator(valid_dataloader)
+            valid_metrics = self.validate(valid_dataloader)
             self.epoch_history.update(metrics=valid_metrics)
         if verbose:
             print(self.epoch_history)
-               
 
-    def checkpoint(self, checkpoint_dir, condition):
-        if condition(self.history, self.epoch_history) or (condition is None):
-            self.hypermodule.save(checkpoint_dir) # TODO: better way to write this?
+    def checkpoint(self, model=None, optimizer=None, scheduler=None, condition=None, verbose=True):
+        if callable(condition):
+            in_condition = condition(self.history, self.epoch_history)
+        else:
+            in_condition = not condition
 
+        if self.checkpoint_dir and in_condition:
+            Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
+            if model:
+                tag = list(model.keys())[0] if isinstance(model, dict) else "model"
+                path = list(model.values())[0] if isinstance(model, dict) else model
+                self.save(model=Path(self.checkpoint_dir) / Path(path), verbose=verbose)
+                self.history.update(**{tag: path})
 
+            if optimizer:
+                tag = list(optimizer.keys())[0] if isinstance(optimizer, dict) else "optimizer"
+                path = list(optimizer.values())[0] if isinstance(optimizer, dict) else optimizer
+                self.save(model=Path(self.checkpoint_dir) / Path(path), verbose=verbose)
+                self.history.update(**{tag: path})
+
+            if scheduler and self.scheduler:
+                tag = list(scheduler.keys())[0] if isinstance(scheduler, dict) else "scheduler"
+                path = list(scheduler.values())[0] if isinstance(scheduler, dict) else scheduler
+                self.save(model=Path(self.checkpoint_dir) / Path(path), verbose=verbose)
+                self.history.update(**{tag: path})
+
+            self.history.save(Path(self.checkpoint_dir) / "history.json")
